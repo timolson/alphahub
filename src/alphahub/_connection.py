@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import websockets
 
-from _fsm import SimpleFSM
+from ._fsm import SimpleFSM
 
 OAUTH_TIMEOUT = timedelta(minutes=25)
 HEARTBEAT_INTERVAL = timedelta(seconds=15)
@@ -20,8 +20,34 @@ HEARTBEAT_CHECK_SECONDS = HEARTBEAT_INTERVAL.total_seconds() / 2
 
 
 class Connection (SimpleFSM):
-    def __init__(self, email:str, password:str, algo_ids:Iterable[int], *,
-                 on_message:Optional[Callable[[str],None]]=None, log:logging.Logger=None):
+    def __init__(self, email:str, password:str, algo_ids:Iterable[int],
+                 on_signal:Optional[Callable[[id,dict],None]]=None, log:logging.Logger=None):
+        """
+        :param email: your alphahub.us login email
+        :param password: your alphahub.us login password
+        :param algo_ids: a list of integer signal ID's to subscribe to. see README.md for values
+        :param on_signal: a Function which is invoked whenever a new signal message is received from alphahub. The first
+        argument is the algorithm ID, and the second argument is a dictionary of signal information that looks like
+        this:
+
+           {
+              "close":[
+                 {"price":216.08,"side":"buy","symbol":"VRTX","timestamp":"2021-04-26 T14:30:00"},
+                 {"price":87.1,"side":"sell","symbol":"MU","timestamp":"2021-04-26T14:30:00"},
+                 {"price":80.28,"side":"sell"," symbol":"BMRN","timestamp":"2021-04-26T14:30:00"}
+              ],
+              "open":[
+                 {"price":168.56,"side":"buy","symbol":"JBHT","timestamp":"2021-04-26T14:30:01"},
+                 {"price":414.6,"side":"buy","symbol":"ILMN","timestamp":"2021-04-26T14:30:01"},
+                 {"price":142.94,"side":"sell","symbol":"CDNS","timestamp":"2021-04-26T14:30:01"}
+              ]
+           }
+
+        if on_signal is not provided, then this class's on_signal() method is invoked instead.
+
+        :param log: an optional logging.Logger used by this class. If not given, then logs are published to
+            alphahub.Connection
+        """
         super().__init__(log=log)
         self.email = email
         self.password = password
@@ -31,10 +57,27 @@ class Connection (SimpleFSM):
         self.expiry:datetime = datetime.min
         self.ws:Optional[websockets.protocol.WebSocketCommonProtocol] = None
         self.stale_time = datetime.min
-        self._on_message = on_message if on_message is not None else self.on_message
+        self._on_signal = on_signal if on_signal is not None else self.on_signal
 
-    def on_message(self, msg:str):
-        self.log.info(f'SIGNAL:\n{msg}')
+    def on_signal(self, id:int, info:dict) -> None:
+        """
+        :param id: integer ID of the signal
+        :param info:
+           {
+              "close":[
+                 {"price":216.08,"side":"buy","symbol":"VRTX","timestamp":"2021-04-26 T14:30:00"},
+                 {"price":87.1,"side":"sell","symbol":"MU","timestamp":"2021-04-26T14:30:00"},
+                 {"price":80.28,"side":"sell"," symbol":"BMRN","timestamp":"2021-04-26T14:30:00"}
+              ],
+              "open":[
+                 {"price":168.56,"side":"buy","symbol":"JBHT","timestamp":"2021-04-26T14:30:01"},
+                 {"price":414.6,"side":"buy","symbol":"ILMN","timestamp":"2021-04-26T14:30:01"},
+                 {"price":142.94,"side":"sell","symbol":"CDNS","timestamp":"2021-04-26T14:30:01"}
+              ]
+           }
+        :return: None
+        """
+        self.log.info(f'SIGNAL {id}:\n{info}')
 
     def state_INIT(self):
         self._close_ws()
@@ -82,11 +125,18 @@ class Connection (SimpleFSM):
     async def state_RECEIVING(self):
         try:
             msg = await wait_for(self._recv(), HEARTBEAT_CHECK_SECONDS)
-            if inspect.iscoroutinefunction(self._on_message):
+            data = json.loads(msg)
+            if data[3] != 'new_signals':
+                self.log.warning(f'expected signal message but received:\n{msg}')
+                self.state = 'ERROR'
+                return
+            id = int(data[2].split[':'][1])
+            info = data[3]
+            if inspect.iscoroutinefunction(self._on_signal):
                 # noinspection PyUnresolvedReferences
-                await self._on_message(msg)
+                await self._on_signal(id,info)
             else:
-                self._on_message(msg)
+                self._on_signal(id,info)
         except asyncio.exceptions.TimeoutError:
             pass
         finally:

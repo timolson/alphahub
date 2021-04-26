@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import sys
 
-from src.alphahub import Connection
+from ._connection import Connection
 import os
 
 log = logging.getLogger('alphahub.main')
@@ -15,7 +16,7 @@ def get_credentials():
     password = os.environ.get('ALPHAHUB_PASSWORD',None)
     if not email or not password:
         try:
-            import creds
+            from . import creds
             if not email:
                 try:
                     email = creds.email
@@ -44,6 +45,9 @@ async def main():
         fatal('Could not get email from ALPHAHUB_EMAIL environment variable or creds.py `email` variable')
     if password is None:
         fatal('Could not get password from ALPHAHUB_PASSWORD environment variable or creds.py `password` variable')
-    oauth = Connection(email, password, algo_ids)
-    await oauth.start()
+    connection = Connection(email, password, algo_ids)
+    await connection.start()
     log.info('done')
+
+
+asyncio.run(main())
