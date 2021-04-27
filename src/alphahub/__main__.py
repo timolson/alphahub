@@ -46,7 +46,7 @@ async def main():
     if password is None:
         fatal('Could not get password from ALPHAHUB_PASSWORD environment variable or creds.py `password` variable')
     connection = Connection(email, password, algo_ids)
-    await connection.start()
+    await connection.run()
     log.info('done')
 
 

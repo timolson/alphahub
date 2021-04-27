@@ -51,7 +51,7 @@ email = 'my@email.com'
 password = 'abc123'
 algo_ids = [14,16,17,18]
 conn = alphahub.Connection(email,password,algo_ids,on_signal)
-asyncio.run(conn.start())
+asyncio.run(conn.run())
 ```
 
 The `Connection` class is a simple finite state machine and on any error it goes back to the initial state, causing a

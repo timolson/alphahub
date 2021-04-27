@@ -31,7 +31,7 @@ class SimpleFSM:
         self.log.debug(f'Entering state {value}')
         self._state = value
 
-    async def start(self):
+    async def run(self):
         if self.running:
             return
         self.running = True
