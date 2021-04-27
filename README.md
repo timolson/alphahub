@@ -17,7 +17,7 @@ reauthenticate and reconnect on any error.
       `password` are used instead. See `src/alphahub/creds_example.py`
 4. `set PYTHONPATH=src`
 5. `python -m alphahub [algo_id]*`
-   1. if no algorithm ID's are given on the command-line, it defaults to using 14,16, and 17
+   1. if no algorithm ID's are given on the command-line, it defaults to using 14, 16, 17, and 18.
 
 ## Connection Class Usage
 
@@ -55,9 +55,7 @@ asyncio.run(conn.start())
 ```
 
 The `Connection` class is a simple finite state machine and on any error it goes back to the initial state, causing a
-re-authentication and new websockets connection to occur. This is "safe" but there's room for improvement: for example
-if the websocket connection drops but the OAuth token is still valid, it should only revert to the AUTHENTICATED state.
-Happy to take pull requests if anyone wants to improve the state management.
+re-authentication and new websockets connection to occur.
 
 NOTE that this is 99% reliable, but if the connection drops just before a signal is published, and the connection is not
 reestablished until after the signal was pushed, then the signal message will be missed. High-availability would require

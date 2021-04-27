@@ -1,4 +1,4 @@
-__all__ = ['SimpleFSM']
+__all__ = ['SimpleFSM','ExceptionState']
 
 import inspect
 import logging
@@ -7,6 +7,13 @@ from typing import Optional
 
 DEFAULT_ERROR_WAIT_TIME=5
 
+class ExceptionState (Exception):
+    """
+    If this class is raised, the state machine quietly and immediately jumps to the new state.  Use this to force
+    state changes from within subroutines that would otherwise exit normally and keep the current state.
+    """
+    def __init__(self,state):
+        self.state = state
 
 class SimpleFSM:
     def __init__(self, *, log=None):
@@ -39,6 +46,9 @@ class SimpleFSM:
                     else:
                         func()
                     self.last_exception = None
+                except ExceptionState as e:
+                    self.last_exception = None
+                    self.state = e.state
                 except Exception as e:
                     self.last_exception = e
                     self.state = 'ERROR'

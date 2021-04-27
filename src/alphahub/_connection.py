@@ -12,11 +12,12 @@ from datetime import datetime, timedelta
 
 import websockets
 
-from ._fsm import SimpleFSM
+from ._fsm import SimpleFSM, ExceptionState
 
-OAUTH_TIMEOUT = timedelta(minutes=25)
+OAUTH_TIMEOUT = timedelta(minutes=29) # it's actually 30 minutes but we leave a small buffer
 HEARTBEAT_INTERVAL = timedelta(seconds=15)
-HEARTBEAT_CHECK_SECONDS = HEARTBEAT_INTERVAL.total_seconds() / 2
+SUBSCRIPTION_TIMEOUT = timedelta(seconds=15) # if subscriptions aren't confirmed within this time, it's an error
+RECEIVE_TIMEOUT_SECONDS = 5
 
 
 class Connection (SimpleFSM):
@@ -43,21 +44,30 @@ class Connection (SimpleFSM):
               ]
            }
 
-        if on_signal is not provided, then this class's on_signal() method is invoked instead.
+        If on_signal is not provided, then this class's on_signal() method is invoked instead. You can either pass in
+        a callback function or override this class's on_signal() method.
 
         :param log: an optional logging.Logger used by this class. If not given, then logs are published to
             alphahub.Connection
         """
         super().__init__(log=log)
         self.email = email
+        if not self.email:
+            raise ValueError('empty email')
         self.password = password
-        self.algo_ids = algo_ids
+        if not self.password:
+            raise ValueError('empty password')
+        self.algo_ids = list(algo_ids)
+        if not self.algo_ids:
+            raise ValueError('no algo_ids specified')
         self.token:Optional[str] = None
         self.renew_token:Optional[str] = None
         self.expiry:datetime = datetime.min
         self.ws:Optional[websockets.protocol.WebSocketCommonProtocol] = None
         self.stale_time = datetime.min
         self._on_signal = on_signal if on_signal is not None else self.on_signal
+        self.subscribed = {id:False for id in self.algo_ids}
+        self.subscription_deadline = datetime.min
 
     def on_signal(self, id:int, info:dict) -> None:
         """
@@ -99,18 +109,50 @@ class Connection (SimpleFSM):
         self.log.debug('websocket connected')
         self.state = 'CONNECTED'
 
-    async def state_CONNECTED(self):
-        for id in self.algo_ids:
-            msg = f'[null,null,"algorithms:{id}","phx_join",{{}}]'
-            self.log.debug(f'sending "{msg}"')
-            await self._send(msg)
-            response = await self._recv()
-            data = json.loads(response)
-            if data[3] != 'phx_reply' or data[4]['status'] != 'ok':
-                self.log.error(f'Bad response from subscription to signal id {id}:\n{response}')
-                self.state = 'ERROR'
-                return
+    def state_CONNECTED(self):
+        self.subscribed = {id:False for id in self.algo_ids}
+        self.subscription_deadline = datetime.now() + SUBSCRIPTION_TIMEOUT
+        self.state = 'SUBSCRIBING'
+
+    async def state_SUBSCRIBING(self):
+        while not all(self.subscribed.values()): # if not everything is subscribed yet
+            for id in [id for id,subscribed in self.subscribed.items() if not subscribed]: # create a list because the subscribed dict changes
+                self.log.debug(f'subscribing to algo {id}')
+                msg = f'[null,null,"algorithms:{id}","phx_join",{{}}]'
+                await self._send(msg)
+                while True: # if another channel's message is interjected we might have to receive multiple times
+                    await self._recv() # this will set the subscribed flag. if another message is interjected it's ok
+                    if self.state != 'SUBSCRIBING':
+                        return
+                    elif self.subscribed[id]:
+                        break
+        self.log.debug('all algorithms are subscribed')
         self.state = 'RECEIVING'
+
+    async def state_RECEIVING(self):
+        await self._recv()
+        now = datetime.now()
+        if now >= self.stale_time:
+            # if there hasn't been any communication within the heartbeat timeout, send a heartbeat
+            self.state = 'STALE'
+
+    async def state_STALE(self):
+        self.log.debug('sending heartbeat')
+        await self._send('[null,null,"phoenix","heartbeat",{}]') # app level ping
+        self.state = 'RECEIVING'
+
+    def state_RECONNECTING(self):
+        self._close_ws()
+        if datetime.now() < self.expiry:
+            self.log.debug('OAuth token still valid. Reconnecting websocket with existing token.')
+            self.state = 'AUTHENTICATED'
+        else:
+            self.log.debug('OAuth token expired. Reauthenticating to reconnect websocket.')
+            self.state = 'INIT'
+
+    async def state_ERROR(self):
+        await super().state_ERROR()
+        self._close_ws()
 
     async def _send(self,msg):
         self.stale_time = datetime.now() + HEARTBEAT_INTERVAL
@@ -118,36 +160,51 @@ class Connection (SimpleFSM):
         await self.ws.send(msg)
 
     async def _recv(self):
-        msg = await self.ws.recv()
-        self.log.debug(f'received:\n{msg}')
-        return msg
-
-    async def state_RECEIVING(self):
         try:
-            msg = await wait_for(self._recv(), HEARTBEAT_CHECK_SECONDS)
-            data = json.loads(msg)
-            if data[3] != 'new_signals':
-                self.log.warning(f'expected signal message but received:\n{msg}')
-                self.state = 'ERROR'
-                return
-            id = int(data[2].split[':'][1])
-            info = data[3]
-            if inspect.iscoroutinefunction(self._on_signal):
-                # noinspection PyUnresolvedReferences
-                await self._on_signal(id,info)
-            else:
-                self._on_signal(id,info)
+            msg = await wait_for(self.ws.recv(), RECEIVE_TIMEOUT_SECONDS)
         except asyncio.exceptions.TimeoutError:
-            pass
-        finally:
-            if datetime.now() >= self.stale_time:
-                self.state = 'STALE'
+            return
+        except websockets.exceptions.ConnectionClosedError:
+            raise ExceptionState('RECONNECTING')
 
-    async def state_STALE(self):
-        self.log.debug('sending heartbeat')
-        await self._send('[null,null,"phoenix","heartbeat",{}]') # app level ping
-        await self._recv()
-        self.state = 'RECEIVING'
+        self.log.debug(f'received:\n{msg}')
+        a,b,channel,method,info = json.loads(msg)
+
+        # Algorithm channels
+        if channel.startswith('algorithms:'):
+            algo_id = int(channel[len('algorithms:'):])
+            if method == 'phx_reply':
+                if info['status'] == 'ok':
+                    self.subscribed[algo_id] = True
+                else:
+                    self.log.warning(f'bad reply from subscription request:\n{msg}')
+                    raise ExceptionState('ERROR')
+            elif method == 'new_signals':
+                asyncio.create_task(self._handle_signal_message(algo_id,info))
+            elif method == 'phx_close':
+                pass
+            else:
+                self.log.warning(f'unknown method on algorithms channel:\n{msg}')
+
+        # system channel
+        elif channel == 'phoenix':
+            if method == 'phx_reply':
+                if info['status'] != 'ok':
+                    logging.warning(f'bad response from heartbeat:\n{msg}')
+                    raise ExceptionState('ERROR')
+            else:
+                logging.warning(f'unknown method on phoenix channel:\n{msg}')
+
+        # unknown channel
+        else:
+            self.log.warning(f'unknown channel:\n{msg}')
+
+    async def _handle_signal_message(self, algo_id, info):
+        if inspect.iscoroutinefunction(self._on_signal):
+            # noinspection PyUnresolvedReferences
+            await self._on_signal(id,info)
+        else:
+            self._on_signal(id,info)
 
     def _close_ws(self):
         if self.ws is not None:
@@ -155,9 +212,3 @@ class Connection (SimpleFSM):
             asyncio.create_task(self.ws.close())
             self.ws = None
 
-    async def state_ERROR(self):
-        await super().state_ERROR()
-        self._close_ws()
-
-def state_DONE(self):
-        self.stop()

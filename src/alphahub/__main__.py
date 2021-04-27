@@ -37,7 +37,7 @@ def fatal(msg):
 
 async def main():
     logging.basicConfig(level=logging.DEBUG,format='%(asctime)-15s %(levelname)s %(name)s %(message)s')
-    algo_ids = map(int,sys.argv[1:]) if sys.argv[1:] else [14, 16, 17]
+    algo_ids = map(int,sys.argv[1:]) if sys.argv[1:] else [14, 16, 17, 18]
     log.info(f'Starting for algos {algo_ids}')
     email,password = get_credentials()
     log.info(f'Found credentials for {email}')
