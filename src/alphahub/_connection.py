@@ -192,6 +192,8 @@ class Connection (SimpleFSM):
                 if info['status'] != 'ok':
                     logging.warning(f'bad response from heartbeat:\n{msg}')
                     raise ExceptionState('ERROR')
+                else:
+                    self.log.debug('heartbeat ok')
             else:
                 logging.warning(f'unknown method on phoenix channel:\n{msg}')
 
@@ -202,9 +204,9 @@ class Connection (SimpleFSM):
     async def _handle_signal_message(self, algo_id, info):
         if inspect.iscoroutinefunction(self._on_signal):
             # noinspection PyUnresolvedReferences
-            await self._on_signal(id,info)
+            await self._on_signal(algo_id,info)
         else:
-            self._on_signal(id,info)
+            self._on_signal(algo_id,info)
 
     def _close_ws(self):
         if self.ws is not None:
