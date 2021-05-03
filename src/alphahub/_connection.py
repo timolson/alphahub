@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 from asyncio import wait_for
-from typing import Optional, Iterable, Callable
+from typing import Optional, Iterable, Callable, Coroutine, Any
 
 import requests
 from datetime import datetime, timedelta
@@ -22,7 +22,7 @@ RECEIVE_TIMEOUT_SECONDS = 5
 
 class Connection (SimpleFSM):
     def __init__(self, email:str, password:str, algo_ids:Iterable[int],
-                 on_signal:Optional[Callable[[id,dict],None]]=None, log:logging.Logger=None):
+                 on_signal:Optional[Callable[[id,dict],Optional[Coroutine[Any,Any,None]]]]=None, log:logging.Logger=None):
         """
         :param email: your alphahub.us login email
         :param password: your alphahub.us login password
@@ -45,7 +45,8 @@ class Connection (SimpleFSM):
            }
 
         If on_signal is not provided, then this class's on_signal() method is invoked instead. You can either pass in
-        a callback function or override this class's on_signal() method.
+        a callback function or override this class's on_signal() method. The callback function is run in its own
+        coroutine and may optionally be declared async.
 
         :param log: an optional logging.Logger used by this class. If not given, then logs are published to
             alphahub.Connection
@@ -206,6 +207,7 @@ class Connection (SimpleFSM):
             # noinspection PyUnresolvedReferences
             await self._on_signal(algo_id,info)
         else:
+            # noinspection PyAsyncCall
             self._on_signal(algo_id,info)
 
     def _close_ws(self):
